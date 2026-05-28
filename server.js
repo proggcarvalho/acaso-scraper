@@ -28,8 +28,8 @@ app.get('/api/raspar', async (req, res) => {
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-        // URL OFICIAL do Google Flights usando a funcionalidade de pesquisa 'q'
-        const url = `https://www.google.com/travel/flights?q=Flights%20from%20${from}%20to%20${to}%20on%20${date}%20through%20${returnDate}`;
+        // URL OFICIAL com idioma PT e moeda EUR forçados!
+        const url = `https://www.google.com/travel/flights?q=Flights%20to%20${to}%20from%20${from}%20on%20${date}%20through%20${returnDate}&hl=pt-PT&curr=EUR`;
         
         console.log(`🌐 A navegar para: ${url}`);
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
@@ -39,7 +39,7 @@ app.get('/api/raspar', async (req, res) => {
             const botoes = await page.$$('button');
             for (let botao of botoes) {
                 const texto = await page.evaluate(el => el.innerText, botao);
-                if (texto && (texto.includes('Rejeitar') || texto.includes('Aceitar') || texto.includes('Reject') || texto.includes('Accept'))) {
+                if (texto && (texto.includes('Rejeitar') || texto.includes('Aceitar'))) {
                     console.log('💥 Botão de cookies destruído!');
                     await botao.click();
                     await new Promise(r => setTimeout(r, 2000));
@@ -51,38 +51,28 @@ app.get('/api/raspar', async (req, res) => {
         }
 
         console.log('⏳ A analisar os preços reais dos voos...');
-        await new Promise(r => setTimeout(r, 4000)); // Dar tempo para a grelha de preços carregar
+        await new Promise(r => setTimeout(r, 6000)); // Esperar mais 2 segundos para o Google Flights renderizar os Euros
 
+        // 4. RAIO-X AO TEXTO DA PÁGINA
         const resultData = await page.evaluate(() => {
             let priceFound = null;
-            
-            // Tática 1: Procurar dentro da lista de voos principal
-            const listasDeVoos = Array.from(document.querySelectorAll('ul, [role="list"]'));
-            for (let lista of listasDeVoos) {
-                if (lista.innerText.includes(':') && (lista.innerText.includes('€') || lista.innerText.includes('EUR'))) {
-                    const spans = Array.from(lista.querySelectorAll('span'));
-                    for (let span of spans) {
-                        const t = span.innerText.trim();
-                        if ((t.includes('€') || t.includes('EUR')) && /\d/.test(t) && t.length <= 10) {
-                            priceFound = t;
-                            break;
-                        }
-                    }
-                    if(priceFound) break;
-                }
+            const bodyText = document.body.innerText;
+
+            // Tática 1: Procurar a tab exata de "Mais barato desde XXX €"
+            const tabMatch = bodyText.match(/Mais barato desde\s*(\d+)[\.,]?\d*\s*€/i);
+            if (tabMatch) {
+                priceFound = tabMatch[1];
             }
 
-            // Tática 2: Se não encontrou na lista, procura botões de destaque "Mais barato"
+            // Tática 2: Se falhar, procura o primeiro preço isolado na grelha
             if (!priceFound) {
-                const todos = Array.from(document.querySelectorAll('span, div'));
-                for (let el of todos) {
-                    const t = el.innerText || '';
-                    if ((t.includes('Mais barato') || t.includes('Cheapest')) && (t.includes('€') || t.includes('EUR'))) {
-                        const matches = t.match(/\d+[\.,]?\d*\s*(€|EUR)/);
-                        if (matches) {
-                            priceFound = matches[0];
-                            break;
-                        }
+                const spans = Array.from(document.querySelectorAll('span'));
+                for (let span of spans) {
+                    const t = span.innerText.trim();
+                    const isoladoMatch = t.match(/^(\d+)[\.,]?\d*\s*€$/);
+                    if (isoladoMatch) {
+                        priceFound = isoladoMatch[1];
+                        break;
                     }
                 }
             }
@@ -93,9 +83,8 @@ app.get('/api/raspar', async (req, res) => {
         await browser.close();
 
         if (resultData && resultData.priceFound) {
-            const pureNumber = parseInt(resultData.priceFound.replace(/\D/g, ''));
+            const pureNumber = parseInt(resultData.priceFound);
             console.log(`✅ SUCESSO! Preço exato do voo encontrado: ${pureNumber}€`);
-            // Retorna JSON válido com sucesso
             return res.json({ success: true, price: pureNumber, airline: "Google Flights", time: "Ver Detalhes" });
         } else {
             throw new Error('Preços não encontrados no painel principal do HTML');
@@ -105,7 +94,6 @@ app.get('/api/raspar', async (req, res) => {
         console.error('❌ Erro na raspagem:', error.message);
         if (browser) await browser.close();
         
-        // Garante que o retorno é SEMPRE um JSON válido para a Vercel não estoirar
         const fakePrice = Math.floor(Math.random() * (350 - 150 + 1) + 150);
         return res.json({ success: true, price: fakePrice, airline: "Acaso Airways", time: "10:30" });
     }
